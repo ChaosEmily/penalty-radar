@@ -4,6 +4,7 @@ config.json
 # Runtime state
 processed_penalties.json
 penalty_history.json
+pending_digest.json
 run_history.jsonl
 reports/
 

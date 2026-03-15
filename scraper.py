@@ -39,6 +39,7 @@ SCRIPT_DIR = Path(__file__).parent
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 STATE_FILE = SCRIPT_DIR / "processed_penalties.json"
 HISTORY_FILE = SCRIPT_DIR / "penalty_history.json"
+PENDING_FILE = SCRIPT_DIR / "pending_digest.json"
 REPORTS_DIR = SCRIPT_DIR / "reports"
 
 # ============================================================================
@@ -86,6 +87,45 @@ def get_repeat_info(history: dict, entity: str) -> str:
     if not records:
         return ""
     return f"該機構近年已累計被裁罰 {len(records)} 次（本次為第 {len(records) + 1} 次）"
+
+def load_pending() -> list:
+    """載入待彙整寄送的佇列"""
+    if not PENDING_FILE.exists():
+        return []
+    try:
+        return json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+def save_pending(items: list):
+    PENDING_FILE.write_text(json.dumps(items, indent=4, ensure_ascii=False), encoding="utf-8")
+
+def flush_pending_digest(config: dict, pending: list) -> bool:
+    """檢查佇列中是否有超過 digest_hold_hours 的案件，若有則全部彙整寄出"""
+    if not pending:
+        return True
+
+    hold_hours = config.get("digest_hold_hours", 24)
+    oldest_ts = min(item.get("queued_at", "") for item in pending)
+    if not oldest_ts:
+        return True
+
+    try:
+        oldest_dt = datetime.strptime(oldest_ts, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return True
+
+    hours_elapsed = (datetime.now() - oldest_dt).total_seconds() / 3600
+    if hours_elapsed < hold_hours:
+        print(f"  佇列中有 {len(pending)} 則非同業案件（最早入列 {oldest_ts}），尚未達 {hold_hours} 小時，暫不寄出。")
+        return True
+
+    print(f"  佇列中有 {len(pending)} 則非同業案件已超過 {hold_hours} 小時，開始彙整寄出...")
+    success = dispatch_digest_email(config, pending)
+    if success:
+        save_pending([])
+        print(f"  非同業彙整信寄送成功，佇列已清空。")
+    return success
 
 def check_for_attachments(url: str) -> bool:
     """爬取原始網頁，檢查是否含有特定副檔名的連結"""
@@ -638,6 +678,12 @@ def main():
         save_state(list(processed_urls)[-2000:])
 
     if not new_items:
+        # 即使沒有新案件，仍檢查佇列是否到期
+        strategy = config.get("email_strategy", "priority")
+        if strategy == "priority":
+            pending = load_pending()
+            if pending:
+                flush_pending_digest(config, pending)
         log_run(rss_new=0)
         print("  目前沒有新的裁罰案件需要處理。")
         sys.exit(0)
@@ -669,15 +715,44 @@ def main():
 
     # 3. 發送 Email
     print("\n[3/3] 開始配送 Email 報告...")
-    strategy = config.get("email_strategy", "single_emails")
+    strategy = config.get("email_strategy", "priority")
 
-    if strategy == "digest":
+    if strategy == "priority":
+        # 分級寄送：同業即時，非同業延遲彙整
+        high_results = [r for r in results if r['ai_output'].get('relevance') == 'high']
+        deferred_results = [r for r in results if r['ai_output'].get('relevance') != 'high']
+
+        success = True
+
+        # 同業案件立即寄出
+        if high_results:
+            print(f"  同業案件 {len(high_results)} 則，立即寄出...")
+            success = dispatch_single_emails(config, high_results)
+
+        # 非同業案件加入佇列
+        if deferred_results:
+            pending = load_pending()
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for r in deferred_results:
+                r['queued_at'] = now_str
+                pending.append(r)
+            save_pending(pending)
+            print(f"  非同業案件 {len(deferred_results)} 則，已加入彙整佇列。")
+
+        # 檢查佇列是否到期
+        pending = load_pending()
+        if pending:
+            flush_result = flush_pending_digest(config, pending)
+            if not flush_result:
+                success = False
+
+    elif strategy == "digest":
         success = dispatch_digest_email(config, results)
     else:
         success = dispatch_single_emails(config, results)
 
     if success:
-        print("\n  全部發送成功！正在更新已處理清單...")
+        print("\n  處理完成！正在更新已處理清單...")
         for r in results:
             processed_urls.add(r['link'])
             # 記錄裁罰歷史（供重複違規偵測）
@@ -689,12 +764,14 @@ def main():
         append_to_html_report(results)
         log_run(rss_new=len(new_items), ai_processed=len(results), email_sent=True)
 
-        # 桌面通知
-        entities = [r['ai_output'].get('penalized_entity', '未知') for r in results]
-        toast_msg = "、".join(entities[:3])
-        if len(entities) > 3:
-            toast_msg += f" 等 {len(entities)} 件"
-        show_windows_toast("裁罰案件追蹤器", f"發現 {len(results)} 則新裁罰：{toast_msg}")
+        # 桌面通知（僅同業即時案件觸發）
+        immediate = [r for r in results if r['ai_output'].get('relevance') == 'high'] if strategy == "priority" else results
+        if immediate:
+            entities = [r['ai_output'].get('penalized_entity', '未知') for r in immediate]
+            toast_msg = "、".join(entities[:3])
+            if len(entities) > 3:
+                toast_msg += f" 等 {len(entities)} 件"
+            show_windows_toast("裁罰案件追蹤器", f"發現 {len(immediate)} 則同業裁罰：{toast_msg}")
     else:
         log_run(rss_new=len(new_items), ai_processed=len(results), error="Email 發送失敗")
         print("\n  發送過程中發生錯誤，狀態將不會更新，下次將重試。")

@@ -63,7 +63,8 @@ python scraper.py
 | `gmail_user` | 發信用 Gmail 帳號 |
 | `gmail_app_password` | Gmail 應用程式密碼 (非登入密碼) |
 | `recipient_email` | 風管部門收件信箱 |
-| `email_strategy` | `single_emails` (每則獨立) 或 `digest` (彙整一封) |
+| `email_strategy` | `priority` (同業即時寄出＋非同業延遲彙整，預設)、`single_emails` (每則獨立) 或 `digest` (彙整一封) |
+| `digest_hold_hours` | `priority` 模式下，非同業案件累積多少小時後彙整寄出（預設 24） |
 | `max_new_per_run` | 每次最多處理幾則新案件 (首次執行時，超出的舊案件會標記為已處理) |
 | `anthropic_api_key` | Claude API 金鑰 |
 | `company_type` | 本公司業別（如 `銀行`、`證券`、`保險`），用於同業篩選 |
@@ -76,6 +77,7 @@ python scraper.py
 - `config.json`: 系統設定（執行時自動產生，不入版控）。
 - `processed_penalties.json`: 已處理的裁罰案件紀錄（不入版控）。
 - `penalty_history.json`: 機構裁罰歷史（供重複違規偵測與統計，不入版控）。
+- `pending_digest.json`: 非同業案件彙整佇列（`priority` 模式使用，不入版控）。
 - `reports/`: 自動產生的 HTML 月報與年度統計。
 
 ## 支援平台
