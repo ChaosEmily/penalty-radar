@@ -1,0 +1,21 @@
+# Credentials & secrets
+config.json
+
+# Runtime state
+processed_penalties.json
+run_history.jsonl
+reports/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
