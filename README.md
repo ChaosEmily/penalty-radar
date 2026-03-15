@@ -28,11 +28,22 @@
 
 預設監測以下金管會 RSS 來源：
 
-| 來源名稱 | 公告類型 | 說明 |
+| 來源名稱 | RSS 網址 | 說明 |
 | -------- | -------- | ---- |
-| 金管會裁罰案件 | 裁罰 | 銀行、保險、證期各業別的裁罰處分公告 |
+| 裁罰案件（含本會及所屬各局） | `https://www.fsc.gov.tw/RSS/Messages?serno=201202290003&language=chinese` | 金管會本會及銀行局、保險局、證期局的裁罰處分公告 |
 
-如需追蹤其他來源，可在 `config.json` 的 `rss_sources` 陣列中新增項目。
+### 新增或變更 RSS 來源
+
+編輯 `config.json` 中的 `rss_url` 欄位即可指定監測的 RSS 來源：
+
+```jsonc
+{
+  "rss_url": "https://www.fsc.gov.tw/RSS/Messages?serno=201202290003&language=chinese"
+}
+```
+
+> **如何找到其他金管會 RSS？**
+> 前往 [金管會 RSS 訂閱頁面](https://www.fsc.gov.tw/ch/home.jsp?id=128&parentpath=0,4)，複製目標類別的 RSS 連結，貼入 `rss_url` 即可。
 
 ## 安裝步驟
 
