@@ -29,6 +29,7 @@ DEFAULT_CONFIG = {
     "scrape_interval_minutes": 60,
     "max_new_per_run": 3,
     "anthropic_api_key": "",
+    "company_type": "銀行",
     "rss_url": "https://www.fsc.gov.tw/RSS/Messages?serno=201202290003&language=chinese"
 }
 

@@ -27,9 +27,6 @@ import subprocess
 import tempfile
 import smtplib
 from email.message import EmailMessage
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 
 # 終端機強制使用 UTF-8 輸出 (針對 Windows 排程環境)
 if sys.platform == "win32":
@@ -41,6 +38,7 @@ if sys.platform == "win32":
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_FILE = SCRIPT_DIR / "config.json"
 STATE_FILE = SCRIPT_DIR / "processed_penalties.json"
+HISTORY_FILE = SCRIPT_DIR / "penalty_history.json"
 REPORTS_DIR = SCRIPT_DIR / "reports"
 
 # ============================================================================
@@ -63,6 +61,31 @@ def load_state() -> list:
 
 def save_state(processed_urls: list):
     STATE_FILE.write_text(json.dumps(processed_urls, indent=4, ensure_ascii=False), encoding="utf-8")
+
+def load_history() -> dict:
+    """載入機構裁罰歷史 {entity_name: [{"date": ..., "link": ...}, ...]}"""
+    if not HISTORY_FILE.exists():
+        return {}
+    try:
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def save_history(history: dict):
+    HISTORY_FILE.write_text(json.dumps(history, indent=4, ensure_ascii=False), encoding="utf-8")
+
+def record_penalty(history: dict, entity: str, date: str, link: str):
+    """記錄一筆裁罰到歷史"""
+    if entity not in history:
+        history[entity] = []
+    history[entity].append({"date": date, "link": link})
+
+def get_repeat_info(history: dict, entity: str) -> str:
+    """查詢該機構過去的裁罰次數，回傳提示文字（空字串表示首次）"""
+    records = history.get(entity, [])
+    if not records:
+        return ""
+    return f"該機構近年已累計被裁罰 {len(records)} 次（本次為第 {len(records) + 1} 次）"
 
 def check_for_attachments(url: str) -> bool:
     """爬取原始網頁，檢查是否含有特定副檔名的連結"""
@@ -128,13 +151,18 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 # AI Processing
 # ============================================================================
 
-def process_with_claude(item: dict, api_key: str) -> dict:
+def process_with_claude(item: dict, client: Anthropic, company_type: str = "") -> dict:
     """呼叫 Claude 分析裁罰案件，產生風險啟示摘要"""
     print(f"  正在讓 AI 分析：{item['title'][:60]}...")
-    client = Anthropic(api_key=api_key)
+
+    company_ctx = ""
+    relevance_field = ""
+    if company_type:
+        company_ctx = f"\n本公司為「{company_type}」業者，請據此判斷此裁罰案件與本公司的關聯程度。"
+        relevance_field = f"""    "relevance": "判斷被裁罰對象是否與本公司屬同一業別（{company_type}）。若是同業填 high；若為金融業但非同業填 medium；若為非金融業填 low","""
 
     prompt = f"""請扮演專業的台灣金融控股公司風險管理分析師。
-我收到一則金管會的裁罰案件公告，請幫我分析此案件對本公司的風險啟示。
+我收到一則金管會的裁罰案件公告，請幫我分析此案件對本公司的風險啟示。{company_ctx}
 
 標題：{item['title']}
 發布時間：{item['published']}
@@ -150,6 +178,8 @@ def process_with_claude(item: dict, api_key: str) -> dict:
     "violation_summary": "一段白話文摘要，說明被裁罰的原因與事實",
     "risk_implication": "用 HTML 格式列出風險啟示。必須使用 <ul><li> 條列，每個風險類型用 <strong> 粗體標示（如 <strong>作業風險</strong>）。不要使用 \\n 換行，只用 HTML 標籤。",
     "suggested_departments": "建議通知的部門（例如：稽核室、法遵部、資訊安全部等）",
+{relevance_field}
+    "checklist": "用 HTML 格式產出自我檢核清單。根據此裁罰的違規事由，列出本公司應檢視的具體項目。格式：<ol><li><strong>[檢核項目]</strong>：[具體檢視內容與標準]</li></ol>。至少 3 項，不超過 6 項。不要使用 \\n，只用 HTML 標籤。",
     "draft_subject": "【裁罰警示】{item['title'][:50]}...",
     "draft_body": "HTML 格式的內部通知草稿。嚴格依照以下模板填入內容，不可省略任何區塊：<p>各位同仁好，</p><p>金管會於[日期]公布裁罰案件，茲摘要通報如下，請各單位檢視自身作業流程。</p><h4>一、被裁罰對象</h4><p>[機構名稱]</p><h4>二、違規事實</h4><ul><li>[事實1]</li><li>[事實2]</li></ul><h4>三、裁罰依據與金額</h4><p>違反[法條]，裁處[金額]。</p><h4>四、風險啟示與自我檢視建議</h4><ul><li><strong>[風險類型1]</strong>：[具體建議]</li><li><strong>[風險類型2]</strong>：[具體建議]</li></ul><h4>五、建議行動</h4><ul><li>[部門A]：請於[期限]前完成[事項]</li><li>[部門B]：請檢視[事項]</li></ul><p>詳細裁罰書請見：<a href='原文連結'>原文連結</a></p><p>如有疑義請洽風險管理部。</p>  不要使用 \\n，只用 HTML 標籤排版。不要包含 <html><body> 標籤。"
 }}
@@ -190,6 +220,8 @@ def process_with_claude(item: dict, api_key: str) -> dict:
                 summary_m = re.search(r'"violation_summary"\s*:\s*"(.*?)"(?=\s*[,}])', json_text, re.DOTALL)
                 risk_m = re.search(r'"risk_implication"\s*:\s*"(.*?)"(?=\s*[,}])', json_text, re.DOTALL)
                 dept_m = re.search(r'"suggested_departments"\s*:\s*"(.*?)"(?=\s*[,}])', json_text, re.DOTALL)
+                relevance_m = re.search(r'"relevance"\s*:\s*"(.*?)"(?=\s*[,}])', json_text, re.DOTALL)
+                checklist_m = re.search(r'"checklist"\s*:\s*"(.*?)"(?=\s*[,}])', json_text, re.DOTALL)
                 subject_m = re.search(r'"draft_subject"\s*:\s*"(.*?)"(?=\s*[,}])', json_text, re.DOTALL)
                 body_m = re.search(r'"draft_body"\s*:\s*"(.*?)"(?=\s*[,}"\s]*\})', json_text, re.DOTALL)
 
@@ -201,6 +233,8 @@ def process_with_claude(item: dict, api_key: str) -> dict:
                         "violation_summary": summary_m.group(1).strip(),
                         "risk_implication": risk_m.group(1).strip() if risk_m else "",
                         "suggested_departments": dept_m.group(1).strip() if dept_m else "",
+                        "relevance": relevance_m.group(1).strip() if relevance_m else "",
+                        "checklist": checklist_m.group(1).strip() if checklist_m else "",
                         "draft_subject": subject_m.group(1).strip(),
                         "draft_body": body_m.group(1).strip() if body_m else summary_m.group(1).strip(),
                     }
@@ -213,40 +247,56 @@ def process_with_claude(item: dict, api_key: str) -> dict:
 # Email Dispatcher
 # ============================================================================
 
-def send_smtp_email(config: dict, msg) -> bool:
-    """底層共用的 SMTP 寄信邏輯"""
+def smtp_connection(config: dict):
+    """建立共用的 SMTP 連線（context manager）"""
+    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+    server.login(config["gmail_user"], config["gmail_app_password"])
+    return server
+
+def send_smtp_email(config: dict, msg, server=None) -> bool:
+    """底層共用的 SMTP 寄信邏輯。可接受既有連線或自行建立。"""
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(config["gmail_user"], config["gmail_app_password"])
+        if server:
             server.send_message(msg)
+        else:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+                s.login(config["gmail_user"], config["gmail_app_password"])
+                s.send_message(msg)
         return True
     except Exception as e:
         print(f"  [ERROR] 發送 Email 失敗：{e}")
         return False
 
 def dispatch_single_emails(config: dict, results: list) -> bool:
-    """每則裁罰案件獨立發送一封 Email"""
+    """每則裁罰案件獨立發送一封 Email（共用 SMTP 連線）"""
     all_success = True
-    for res in results:
-        ai = res['ai_output']
-        # 將所有文字欄位中的 \n 轉換為 <br>（防止 AI 回傳純文字換行）
-        for key in ('risk_implication', 'violation_summary', 'draft_body'):
-            if key in ai and isinstance(ai[key], str):
-                ai[key] = ai[key].replace('\\n', '<br>').replace('\n', '<br>')
-        print(f"  正在發送 Email: {ai['draft_subject'][:50]}...")
+    try:
+        server = smtp_connection(config)
+    except Exception as e:
+        print(f"  [ERROR] SMTP 連線失敗：{e}")
+        return False
 
-        attachment_notice = ""
-        if res.get('has_attachments'):
-            attachment_notice = '<div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 4px; margin: 10px 0; font-weight: bold;">包含附件，請務必點擊原文連結詳閱裁罰書全文。</div>'
+    try:
+        for res in results:
+            ai = res['ai_output']
+            # 將所有文字欄位中的 \n 轉換為 <br>（防止 AI 回傳純文字換行）
+            for key in ('risk_implication', 'violation_summary', 'draft_body', 'checklist'):
+                if key in ai and isinstance(ai[key], str):
+                    ai[key] = ai[key].replace('\\n', '<br>').replace('\n', '<br>')
+            print(f"  正在發送 Email: {ai['draft_subject'][:50]}...")
 
-        html_content = f"""
+            attachment_notice = ""
+            if res.get('has_attachments'):
+                attachment_notice = '<div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 4px; margin: 10px 0; font-weight: bold;">包含附件，請務必點擊原文連結詳閱裁罰書全文。</div>'
+
+            html_content = f"""
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
             <div style="background-color: #fce4ec; border-left: 5px solid #c62828; padding: 15px; margin-bottom: 20px;">
                 <h3 style="margin-top: 0; color: #c62828;">裁罰案件摘要</h3>
                 <p><strong>{res['title']}</strong></p>
                 <table style="border-collapse: collapse; width: 100%; margin: 10px 0;">
-                    <tr><td style="padding: 4px 8px; font-weight: bold; width: 120px;">被裁罰對象</td><td style="padding: 4px 8px;">{ai.get('penalized_entity', '未知')}</td></tr>
+                    <tr><td style="padding: 4px 8px; font-weight: bold; width: 120px;">被裁罰對象</td><td style="padding: 4px 8px;">{ai.get('penalized_entity', '未知')}{"  <span style='background:#ff6f00;color:#fff;padding:1px 8px;border-radius:3px;font-size:0.8em;'>" + ai['repeat_info'] + "</span>" if ai.get('repeat_info') else ""}</td></tr>
                     <tr><td style="padding: 4px 8px; font-weight: bold;">罰鍰金額</td><td style="padding: 4px 8px;">{ai.get('penalty_amount', '未載明')}</td></tr>
                     <tr><td style="padding: 4px 8px; font-weight: bold;">違反法規</td><td style="padding: 4px 8px;">{ai.get('violated_laws', '未載明')}</td></tr>
                     <tr><td style="padding: 4px 8px; font-weight: bold;">建議通知</td><td style="padding: 4px 8px;">{ai.get('suggested_departments', '')}</td></tr>
@@ -257,7 +307,13 @@ def dispatch_single_emails(config: dict, results: list) -> bool:
 
             <div style="background-color: #e3f2fd; border-left: 5px solid #1565c0; padding: 15px; margin-bottom: 20px;">
                 <h3 style="margin-top: 0; color: #1565c0;">風險啟示與自我檢視建議</h3>
+                {"<div style='display:inline-block; background:#c62828; color:#fff; padding:2px 10px; border-radius:4px; font-size:0.85em; margin-bottom:8px;'>同業案件</div>" if ai.get('relevance') == 'high' else ""}
                 <p>{ai.get('risk_implication', '')}</p>
+            </div>
+
+            <div style="background-color: #f3e5f5; border-left: 5px solid #7b1fa2; padding: 15px; margin-bottom: 20px;">
+                <h3 style="margin-top: 0; color: #7b1fa2;">自我檢核清單</h3>
+                {ai.get('checklist', '<p>（未產生檢核項目）</p>')}
             </div>
 
             <hr/>
@@ -273,17 +329,25 @@ def dispatch_single_emails(config: dict, results: list) -> bool:
             </p>
         </body>
         </html>
-        """
+            """
 
-        msg = EmailMessage()
-        msg["Subject"] = ai['draft_subject']
-        msg["From"] = config["gmail_user"]
-        msg["To"] = config["recipient_email"]
-        msg.set_content(html_content, subtype='html')
+            # 同業標記：relevance=high 時在主旨前加標籤
+            subject = ai['draft_subject']
+            relevance = ai.get('relevance', '')
+            if relevance == 'high':
+                subject = "【同業警示】" + subject.replace("【裁罰警示】", "")
 
-        if not send_smtp_email(config, msg):
-            all_success = False
-            break
+            msg = EmailMessage()
+            msg["Subject"] = subject
+            msg["From"] = config["gmail_user"]
+            msg["To"] = config["recipient_email"]
+            msg.set_content(html_content, subtype='html')
+
+            if not send_smtp_email(config, msg, server):
+                all_success = False
+                break
+    finally:
+        server.quit()
 
     return all_success
 
@@ -515,7 +579,9 @@ def main():
     print("=" * 60)
 
     config = load_config()
-    processed_urls = load_state()
+    processed_list = load_state()
+    processed_urls = set(processed_list)
+    penalty_history = load_history()
 
     check_retention_reminder()
 
@@ -531,12 +597,14 @@ def main():
 
     new_items = []
     skipped_items = []
+    rss_fetch_ok = False
 
     try:
         resp = requests.get(rss_url, timeout=15, verify=False)
         # 重要：使用 resp.content (bytes) 而非 resp.text，避免編碼錯誤
         feed = feedparser.parse(resp.content)
         print(f"  RSS 來源取得 {len(feed.entries)} 筆裁罰案件")
+        rss_fetch_ok = True
 
         for entry in feed.entries:
             link = entry.link
@@ -557,13 +625,15 @@ def main():
 
     except Exception as e:
         print(f"  [ERROR] 讀取 RSS 失敗：{e}")
+        log_run(error=f"RSS 讀取失敗: {e}")
+        sys.exit(1)
 
     # 首次執行：將超出數量限制的舊案件標記為已處理
     if skipped_items:
         print(f"  將 {len(skipped_items)} 則舊案件標記為已處理（首次執行限制）")
         for item in skipped_items:
-            processed_urls.append(item['link'])
-        save_state(processed_urls[-2000:])
+            processed_urls.add(item['link'])
+        save_state(list(processed_urls)[-2000:])
 
     if not new_items:
         log_run(rss_new=0)
@@ -572,11 +642,20 @@ def main():
 
     # 2. AI 分析
     print(f"\n[2/3] 發現 {len(new_items)} 則新裁罰案件，開始進行 AI 分析...")
+    client = Anthropic(api_key=api_key)
+    company_type = config.get("company_type", "")
     results = []
     for item in new_items:
         item['has_attachments'] = check_for_attachments(item['link'])
-        ai_data = process_with_claude(item, api_key)
+        ai_data = process_with_claude(item, client, company_type)
         if ai_data:
+            # 重複違規偵測
+            entity = ai_data.get('penalized_entity', '未知')
+            repeat_info = get_repeat_info(penalty_history, entity)
+            if repeat_info:
+                print(f"    [注意] {repeat_info}")
+            ai_data['repeat_info'] = repeat_info
+
             item['ai_output'] = ai_data
             results.append(item)
         time.sleep(1)
@@ -598,8 +677,13 @@ def main():
     if success:
         print("\n  全部發送成功！正在更新已處理清單...")
         for r in results:
-            processed_urls.append(r['link'])
-        save_state(processed_urls[-2000:])
+            processed_urls.add(r['link'])
+            # 記錄裁罰歷史（供重複違規偵測）
+            entity = r['ai_output'].get('penalized_entity', '未知')
+            pub_date = r.get('published', '')[:10]
+            record_penalty(penalty_history, entity, pub_date, r['link'])
+        save_state(list(processed_urls)[-2000:])
+        save_history(penalty_history)
         append_to_html_report(results)
         log_run(rss_new=len(new_items), ai_processed=len(results), email_sent=True)
 
