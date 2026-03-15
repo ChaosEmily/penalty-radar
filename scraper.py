@@ -283,7 +283,7 @@ def dispatch_single_emails(config: dict, results: list) -> bool:
             for key in ('risk_implication', 'violation_summary', 'draft_body', 'checklist'):
                 if key in ai and isinstance(ai[key], str):
                     ai[key] = ai[key].replace('\\n', '<br>').replace('\n', '<br>')
-            print(f"  正在發送 Email: {ai['draft_subject'][:50]}...")
+            # log 移至主旨替換後
 
             attachment_notice = ""
             if res.get('has_attachments'):
@@ -336,6 +336,8 @@ def dispatch_single_emails(config: dict, results: list) -> bool:
             relevance = ai.get('relevance', '')
             if relevance == 'high':
                 subject = "【同業警示】" + subject.replace("【裁罰警示】", "")
+
+            print(f"  正在發送 Email: {subject[:50]}...")
 
             msg = EmailMessage()
             msg["Subject"] = subject
