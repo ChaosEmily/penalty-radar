@@ -39,7 +39,7 @@
 1. **複製專案**：
 
    ```bash
-   git clone https://github.com/your-username/penalty-radar.git
+   git clone https://github.com/ChaosEmily/penalty-radar.git
    cd penalty-radar
    ```
 
