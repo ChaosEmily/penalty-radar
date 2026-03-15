@@ -94,7 +94,7 @@ python scraper.py
 | ---- | ---- |
 | `gmail_user` | 發信用 Gmail 帳號 |
 | `gmail_app_password` | Gmail 應用程式密碼（非登入密碼，需至 Google 帳戶設定產生） |
-| `recipient_email` | 風管部門收件信箱 （可不填）|
+| `recipient_email` | 風管部門收件信箱 （可和 gmail_user 相同）|
 | `email_strategy` | `priority`（同業即時+非同業延遲，預設）、`single_emails` 或 `digest` |
 | `digest_hold_hours` | `priority` 模式下，非同業案件累積多少小時後彙整寄出（預設 24） |
 | `scrape_interval_minutes` | 排程執行間隔（分鐘），預設 60 |
