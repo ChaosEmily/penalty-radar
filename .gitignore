@@ -1,5 +1,6 @@
 # Credentials & secrets
 config.json
+.env
 
 # Runtime state
 processed_penalties.json
@@ -7,11 +8,17 @@ penalty_history.json
 pending_digest.json
 run_history.jsonl
 reports/
+*.log
 
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .venv/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # OS
 Thumbs.db
@@ -21,3 +28,9 @@ Desktop.ini
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# Skill Checker
+skill-check-report.md
+skill-check-results.json

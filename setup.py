@@ -12,6 +12,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Python 版本檢查 (最低 3.8)
+if sys.version_info < (3, 8):
+    print("[ERROR] 本工具需要 Python 3.8 或更高版本。")
+    print(f"目前版本為：{sys.version}")
+    sys.exit(1)
+
 # 終端機強制使用 UTF-8 輸出 (針對 Windows)
 if sys.platform == "win32":
     if sys.stdout.encoding != "utf-8":
